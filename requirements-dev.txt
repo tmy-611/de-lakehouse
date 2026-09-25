@@ -1,0 +1,6 @@
+pytest==8.2.2
+ruff=0.5.5
+sqlfluff==3.0.7
+sqlfluff-templater-dbt==3.0.7
+PyYAML==6.0.1
+psycopg2-binary==2.9.9

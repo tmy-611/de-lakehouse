@@ -47,14 +47,14 @@ Một người học đã **vững Python + SQL nhưng mới với DE tooling**.
 Nguồn batch:  Postgres OLTP (olist_source: customers/products/orders/...)
                     │  (Python extract incremental)
                     ▼
-                 [ BRONZE ]  Parquet thô + metadata, trên MinIO (S3-compatible)
+                 [ BRONZE ]  Parquet thô + metadata, trên Garage (S3-compatible)
                     │
 Streaming (P2):   Kafka  ──▼
 Producer events →         [ BRONZE Kafka sink ]
                     │
                     ▼
                  [ SILVER ]  Làm sạch, dedup, chuẩn hóa, type-cast — PySpark
-                    │            (ghi Parquet lên MinIO + load vào Postgres schema silver)
+                    │            (ghi Parquet lên Garage + load vào Postgres schema silver)
                     ▼
                  [ GOLD ]  Star schema + marts — dbt (trên Postgres warehouse)
                     │
@@ -71,7 +71,7 @@ Xuyên suốt:  Airflow (nhiều DAG + Datasets) │ dbt tests + Great Expectati
 | Lớp | Công nghệ | Vì sao (benefit) |
 |---|---|---|
 | Orchestration | Apache Airflow (LocalExecutor, Docker) | Xuất hiện nhiều nhất trong JD DE; học DAG/scheduling/backfill |
-| Lake storage | MinIO (S3 API) + Parquet partitioned | S3 API giống cloud → tư duy lake transferable |
+| Lake storage | Garage (S3 API) + Parquet partitioned | S3 API giống cloud → tư duy lake transferable |
 | Batch processing | PySpark | Skill bắt buộc; xử lý khối lượng lớn, dùng chung cho streaming |
 | Modeling/ELT | dbt trên Postgres | Star schema, test, lineage, snapshot, docs — rất hay hỏi |
 | Streaming (P2) | Kafka (KRaft) + Spark Structured Streaming | Real-time pipeline, Kafka là keyword phổ biến |
@@ -80,13 +80,15 @@ Xuyên suốt:  Airflow (nhiều DAG + Datasets) │ dbt tests + Great Expectati
 | Packaging/CI | Docker Compose + GitHub Actions | DevOps cho data platform |
 | Query/BI (tùy chọn) | DuckDB hoặc Metabase | Demo kết quả trực quan |
 
+> **Ruling 2026-09-25 — object storage MinIO → Garage v2.3.0.** MinIO đã xoá `minio/minio` và `minio/mc` khỏi Docker Hub (11/09/2026) và bản trên Quay không pull ẩn danh được. Ta dùng **Garage v2.3.0** (`dxflrs/garage:v2.3.0`) — vẫn là S3 API nên mọi đường dẫn `s3://lake/...`, s3fs và Spark s3a không đổi; chỉ đổi endpoint/credentials. Bucket `lake` và access key được tạo tự động bằng `garage server --single-node --default-bucket`.
+
 ---
 
 ## 5. Phân phase
 
 Mỗi phase là một sản phẩm hoàn chỉnh, có thể dừng ở bất kỳ phase nào.
 
-- **Phase 1 — Batch lakehouse cốt lõi:** Postgres → Bronze Parquet (MinIO) → Spark Silver → dbt Gold (star schema, SCD2) → Airflow (nhiều DAG + Datasets) → quality → Docker Compose + CI.
+- **Phase 1 — Batch lakehouse cốt lõi:** Postgres → Bronze Parquet (Garage) → Spark Silver → dbt Gold (star schema, SCD2) → Airflow (nhiều DAG + Datasets) → quality → Docker Compose + CI.
 - **Phase 2 — Real-time + CDC:** event producer → Kafka → Spark Structured Streaming ghi Silver; Debezium CDC từ Postgres.
 - **Phase 3 — Hardening:** Apache Iceberg + query engine (DuckDB/Trino), observability (Prometheus/Grafana hoặc OpenLineage/Marquez), IaC & CI/CD nâng cao.
 
@@ -126,7 +128,7 @@ Mỗi phase là một sản phẩm hoàn chỉnh, có thể dừng ở bất k�
 - Mỗi entity một bảng: `customers`, `orders`, `order_items`, `products`, `sellers`, `payments`, `reviews`, `geolocation`.
 - Quy tắc: cast type + trim; dedup theo PK lấy bản mới nhất theo watermark; chuẩn hóa null/giá trị lạ; join `product_category_translation` để có tên category tiếng Anh; geolocation gộp theo `zip_code_prefix`.
 - Grain: `order_items` giữ 1 dòng/item; `orders` 1 dòng/order.
-- Lưu: Parquet trên MinIO **và** load vào Postgres schema `silver`.
+- Lưu: Parquet trên Garage **và** load vào Postgres schema `silver`.
 
 ### 7.3 Gold — star schema (dbt trên Postgres)
 
@@ -149,7 +151,7 @@ Mỗi phase là một sản phẩm hoàn chỉnh, có thể dừng ở bất k�
 ### 7.5 Phân chia trách nhiệm
 - **Spark** = Bronze→Silver: khối lượng lớn, typing, dedup, sẵn sàng streaming.
 - **dbt** = Silver→Gold/Marts: modeling SQL, macro, test, lineage, snapshot (SCD2), docs.
-- Warehouse Postgres chứa `silver` (Spark load) + `gold`/`marts` (dbt build). Lake MinIO giữ Bronze + Silver Parquet.
+- Warehouse Postgres chứa `silver` (Spark load) + `gold`/`marts` (dbt build). Lake Garage giữ Bronze + Silver Parquet.
 
 ---
 
@@ -239,14 +241,14 @@ project2/
 
 ### 10.1 Docker Compose services (Phase 1)
 - `postgres` với 3 DB tách biệt: `olist_source`, `airflow`, `warehouse`.
-- `minio` + bucket init.
+- `garage` (S3-compatible, tự tạo bucket + access key) — Phase 1.
 - `airflow-webserver` + `airflow-scheduler` (LocalExecutor).
 - `spark-master` + `spark-worker`.
 - Phase 2 thêm `kafka`/`debezium`; Phase 3 thêm `trino`/`grafana`; tùy chọn `metabase`.
 
 ### 10.2 Config & bảo mật
 - Secret qua `.env` (gitignore); `.env.example` commit.
-- Airflow Connections/Variables cho Postgres/MinIO.
+- Airflow Connections/Variables cho Postgres/Garage.
 - Kaggle token qua env. Không hardcode secret.
 
 ### 10.3 Lệnh vận hành
